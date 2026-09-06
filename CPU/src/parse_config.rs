@@ -168,7 +168,7 @@ fn stl_parser(config: &Config) -> Vec<Triangle3D>{
 }
 
 pub fn generate_config() -> (Camera,Vec<Triangle3D>){
-    let mut file = File::open("config.json").unwrap();
+    let mut file = File::open("./config.json").unwrap();
     let mut content = String::new();
     file.read_to_string(&mut content).unwrap();
     let config : Config = serde_json::from_str(&content).unwrap();
