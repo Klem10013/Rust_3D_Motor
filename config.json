@@ -1,12 +1,12 @@
 {
   "sun" : [1,1,1],
   "lights" : [
-    [0,0,0]
+    [0,-100,0]
   ],
   "stl_files" : [
   ],
   "obj_files" : [
-    "Truc"
+    "Med"
   ],
   "rectangles" : [
   ],
