@@ -77,8 +77,8 @@ impl Camera{
             //focal_point: (0, 0, -focal_point_distance),
             focal_dist: focal_point_distance,
             focal_distf: focal_point_distance as f64,
-            pos : (0, 0, 0),
-            posf: (0.0, 0.0, 0.0),
+            pos : (0, 0, -1000),
+            posf: (0.0, 0.0, -1000.0),
             rot : (0f64, 0f64, 0f64),
             normal: Normal::new_from_equation((0,0,1), (0,0,focal_point_distance)),
             sun,
@@ -497,7 +497,6 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, atomic_buffer: &m
             //if (same_signe(tri.normal.nx,p1p2.0 as isize) || same_signe(tri.normal.nx,p1p3.0 as isize)) && (same_signe(tri.normal.ny,p1p2.1 as isize) || same_signe(tri.normal.ny,p1p3.1 as isize)){
             //    continue;
             //}
-
             let min_x = if tri.square_x > -WIDTH2I { tri.square_x - 1 } else { -WIDTH2I };
             let min_y = if tri.square_y > -HEIGHT2I { tri.square_y - 1} else { -HEIGHT2I };
             let max_x = if tri.square_width < WIDTH2I { tri.square_width + 1 } else { WIDTH2I };
@@ -555,7 +554,6 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, atomic_buffer: &m
 
                                 //let light = (light as f64 * fog) as u32;
                                 let color = (r << 16)+(g << 8)+b;
-
                                 atomic_buffer[idx].fetch_min(encode_isize(z, color), Ordering::Relaxed);
                             }
                         }
