@@ -85,14 +85,14 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
     if (x_i < (x_c + 1)*fac_x && y_i < (y_c + 1)*fac_y){
         int index = x_i + y_i*width;
         if (index < width*height){
-            //Color[index] = ((grid_size*9876567239 + x_c*9876 +y_c*98765678)%(0xFFFFFF));
-            Color[index] = 0;
+            Color[index] = ((grid_size*9876567239 + x_c*9876 +y_c*98765678)%(0xFFFFFF));
+            //Color[index] = 0;
             float x = (float)(x_i - width/2);
             float y = (float)(y_i - height/2);
             float mini_z = -1.0;
             int tri_index = 0;
             Point3D val = Point3D{x,y,CAMERA_FOCAL_DIST};
-            for (unsigned int i = 0; i < triangles_len; i++){
+            for (unsigned int i = 0 ; i < triangles_len; i++){
                 const Triangles2D& tri = triangles[i];
                 float d1 = sign(Point2D{ x, y } , tri.p1i, tri.p2i);
                 float d2 = sign(Point2D{ x, y } , tri.p2i, tri.p3i);
@@ -141,7 +141,7 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
                     }
                 }
                 unsigned int color = (((unsigned int)r) <<16) + (((unsigned int) g) << 8) + ((unsigned int)b);
-                Color[index] = color;
+                //Color[index] = color;
             }
         }
     }

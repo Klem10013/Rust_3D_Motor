@@ -1,7 +1,6 @@
 mod GPU;
 mod parse_config;
 
-use std::cmp::{max, min};
 use std::ffi::c_void;
 use std::ptr;
 use minifb::{Key, MouseMode, Window, WindowOptions};
@@ -15,9 +14,9 @@ use crate::GPU::{dim3, CUdeviceptr};
 use parse_config::generate_config;
 
 
-const WIDTH: usize = 2048;
+const WIDTH: usize = 1920;
 const WIDTH2I : i64 = (WIDTH as i64) /2;
-const HEIGHT: usize = 1024;
+const HEIGHT: usize = 1080;
 const HEIGHT2I : i64 = (HEIGHT as i64) /2;
 
 #[allow(dead_code)]
@@ -112,8 +111,8 @@ impl Camera{
             //focal_point: (0, 0, -focal_point_distance),
             focal_dist: focal_point_distance,
             focal_distf: focal_point_distance as f32,
-            pos : (0, 0, -1000),
-            posf: (0.0, 0.0, -1000.0),
+            pos : (0, 0, 0),
+            posf: (0.0, 0.0, 0.0),
             rot : (0f32, 0f32, 0f32),
             normal: Normal::new_from_equation((0,0,1), (0,0,focal_point_distance)),
             sun,
@@ -591,17 +590,21 @@ fn split_screen(all_triangles : &Vec<&Triangle2D>, coo : (i64,i64),grid_size : i
                 Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, triangles.len());
                 all_ptr.push(gpu_ptr);
             }
-            let mut params = to_params!(
-                gpu_ptr,
-                gpu_buffer,
-                coo.0,
-                coo.1,
-                grid_size,
-                (WIDTH as i64),
-                (HEIGHT as i64),
-                (all_triangles.len() as i64)
-            );
-            gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr());
+            //let fac = all_triangles.len()/MAX_TRIANGLES;
+            let fac = 0;
+            for i in 0..(fac+1) {
+                let mut params = to_params!(
+                    unsafe {gpu_ptr.add(i*MAX_TRIANGLES*size_of::<Triangle2D>())},
+                    gpu_buffer,
+                    coo.0,
+                    coo.1,
+                    grid_size,
+                    (WIDTH as i64),
+                    (HEIGHT as i64),
+                    if all_triangles.len() >= (i+1)*MAX_TRIANGLES {MAX_TRIANGLES as i64} else {(all_triangles.len() % MAX_TRIANGLES) as i64}
+                );
+                gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr());
+            }
         //}
     }
     all_ptr
