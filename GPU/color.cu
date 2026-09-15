@@ -1,6 +1,7 @@
 #include <cuda/std/tuple>
 #include <cuda/std/cmath>
 #include <iostream>
+#include <cstdint>
 
 struct Point2D { float x, y;};
 struct Point3D { float x, y, z;};
@@ -72,7 +73,7 @@ __device__ float clamp(float value, float min, float max){
     return fminf(fmaxf(value,min),max);
 }
 
-const float CAMERA_FOCAL_DIST = 350.0;
+const float CAMERA_FOCAL_DIST = 500.0;
 
 extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsigned int* __restrict__ Color, int x_c, int y_c, int grid_size, int width, int height, int triangles_len){
     int x_t = threadIdx.x + blockDim.x * blockIdx.x;
@@ -81,11 +82,11 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
     int fac_x = width/grid_size;
     int fac_y = height/grid_size;
     int x_i = x_t + x_c * fac_x;
-    int y_i = y_t + y_c * fac_y;
-    if (x_i < (x_c + 1)*fac_x && y_i < (y_c + 1)*fac_y){
+    int y_i = y_t + y_c * fac_x;
+    if (x_i < (x_c + 1)*fac_x && y_i < (y_c + 1)*fac_x){
         int index = x_i + y_i*width;
         if (index < width*height){
-            Color[index] = ((grid_size*9876567239 + x_c*9876 +y_c*98765678)%(0xFFFFFF));
+            Color[index] = ((grid_size*9876567239 + x_c*98760987 +y_c*98765678)%(0xFFFFFF));
             //Color[index] = 0;
             float x = (float)(x_i - width/2);
             float y = (float)(y_i - height/2);
@@ -141,7 +142,7 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
                     }
                 }
                 unsigned int color = (((unsigned int)r) <<16) + (((unsigned int) g) << 8) + ((unsigned int)b);
-                //Color[index] = color;
+                Color[index] = color;
             }
         }
     }

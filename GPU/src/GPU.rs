@@ -96,6 +96,10 @@ pub struct Gpu{
     function : CUfunction,
 }
 
+unsafe impl Send for Gpu{}
+unsafe impl Sync for Gpu{}
+
+
 impl Gpu{
     pub fn new() -> Gpu{
             let mut device: CUdevice = 0;

@@ -2,7 +2,7 @@ mod GPU;
 mod parse_config;
 
 use std::ffi::c_void;
-use std::ptr;
+use std::{ptr, time};
 use minifb::{Key, MouseMode, Window, WindowOptions};
 
 use std::time::Instant;
@@ -99,6 +99,7 @@ struct Camera{
     pos : (i64,i64,i64),
     posf : (f32,f32,f32),
     rot : (f32,f32,f32),
+    rot_cos_sin_1_2 : ((f32,f32),(f32,f32),(f32,f32)),
     normal: Normal,
     sun : (f32,f32,f32),
     lights : Vec<(f32,f32,f32)>,
@@ -114,7 +115,8 @@ impl Camera{
             pos : (0, 0, 0),
             posf: (0.0, 0.0, 0.0),
             rot : (0f32, 0f32, 0f32),
-            normal: Normal::new_from_equation((0,0,1), (0,0,focal_point_distance)),
+            rot_cos_sin_1_2: ((0.0, 0.0),(0.0, 0.0), (0.0, 0.0)),
+            normal: Normal::new_from_equation((0, 0, 1), (0, 0, focal_point_distance)),
             sun,
             lights,
             old_mouse_pos: (0.0, 0.0),
@@ -135,10 +137,10 @@ impl Camera{
     #[inline(always)]
     fn point_transformation(&self ,point : (f32,f32,f32)) -> (f32,f32,f32) {
         let point_c = (point.0 - self.posf.0, point.1 - self.posf.1, point.2 - self.posf.2);
-        let nx     = point_c.0 * self.rot.1.cos() - point_c.2 * self.rot.1.sin();
-        let nz_tmp = point_c.0 * self.rot.1.sin() + point_c.2 * self.rot.1.cos();
-        let nz     = point_c.1 * self.rot.2.sin() + nz_tmp * self.rot.2.cos();
-        let ny     = point_c.1 * self.rot.2.cos() - nz_tmp * self.rot.2.sin();
+        let nx     = point_c.0 * self.rot_cos_sin_1_2.1.0 - point_c.2 * self.rot_cos_sin_1_2.1.1;
+        let nz_tmp = point_c.0 * self.rot_cos_sin_1_2.1.1 + point_c.2 * self.rot_cos_sin_1_2.1.0;
+        let nz     = point_c.1 * self.rot_cos_sin_1_2.2.1 + nz_tmp * self.rot_cos_sin_1_2.2.0;
+        let ny     = point_c.1 * self.rot_cos_sin_1_2.2.0 - nz_tmp * self.rot_cos_sin_1_2.2.1;
         (nx, ny, nz)
     }
     pub fn get_lights(&self) -> Vec<(f32,f32,f32)>{
@@ -159,6 +161,9 @@ impl Camera{
                 let diff_y = (pos.1 - self.old_mouse_pos.1) / 5000f32;
                 self.rot.1 += diff_x.to_degrees();
                 self.rot.2 += diff_y.to_degrees();
+                self.rot_cos_sin_1_2 = ((self.rot.0.cos(),self.rot.0.sin()),
+                                        (self.rot.1.cos(),self.rot.1.sin()),
+                                        (self.rot.2.cos(),self.rot.2.sin()));
                 self.old_mouse_pos = (pos.0, pos.1);
             }
         } else {
@@ -330,7 +335,7 @@ impl Triangle3D{
         if p1_3d.2 < camera.focal_distf && p2_3d.2 < camera.focal_distf && p3_3d.2 < camera.focal_distf {
             vec![]
         }else {
-            let mut triangles = vec![];
+            let mut triangles = Vec::with_capacity(2);
             let mut normal = Normal::new(p1_3d,p2_3d,p3_3d);
             if self.inverse_normal{
                 normal.inverse()
@@ -517,11 +522,6 @@ const fn same_signe(x : i64, y : i64) -> bool{
 }
 
 #[inline(always)]
-fn vec_size(vec : (f32,f32,f32)) -> f32{
-    ((vec.0 * vec.0) + (vec.1 * vec.1) + (vec.2 * vec.2)).sqrt()
-}
-
-#[inline(always)]
 const fn sub(a: (f32,f32,f32), b: (f32,f32,f32)) -> (f32,f32,f32) {
     (a.0-b.0, a.1-b.1, a.2-b.2)
 }
@@ -537,89 +537,94 @@ const fn cross(a: (f32,f32,f32), b: (f32,f32,f32)) -> (f32,f32,f32) {
 }
 
 const MAX_TRIANGLES : usize = 300;
-const GRID_SIZE: i64 = 16;
-fn split_screen(all_triangles : &Vec<&Triangle2D>, coo : (i64,i64),grid_size : i64, gpu_buffer :  CUdeviceptr, gpu  : &Gpu) -> Vec<CUdeviceptr>{
-    let mut all_ptr = vec![];
-    if all_triangles.len() > MAX_TRIANGLES && grid_size < (WIDTH as i64 /16){
-        let mut sup_screen : Vec<Vec<Vec<&Triangle2D>>> = vec![vec![vec![] ; 2]; 2];
-        let grid_size = grid_size*2;
+const GRID_SIZE: u32 = 32;
+
+fn split_screen<'a>(all_triangles: Vec<&'a Triangle2D>, coo : (i64, i64), grid_size : i64, gpu_buffer :  usize , gpu  : &Gpu) -> Vec<((i64,i64),i64,Vec<&'a Triangle2D>)>{
+    let mut all_ptr: Vec<((i64,i64),i64,Vec<&Triangle2D>)>  = vec![];
+    if all_triangles.len() > MAX_TRIANGLES && grid_size < ((WIDTH as u32 /128) as i64){
+        let mut sup_screen : Vec<Vec<&Triangle2D>> = vec![vec![]; 4];
+        let grid_size = grid_size << 1;
+        let fac = WIDTH as i64 / grid_size;
+        let cox = coo.0 * fac << 1;
+        let coy = coo.1 * fac << 1;
         for tri in all_triangles.iter() {
-            let fac_x = WIDTH as i64 / grid_size;
-            let fac_y = HEIGHT as i64 / grid_size;
+            let case_sx = (tri.square_x + WIDTH2I) - cox;
+            let case_sy = (tri.square_y + HEIGHT2I) - coy;
+            let case_end_x = (tri.square_width + WIDTH2I) - cox;
+            let case_end_y = (tri.square_height+ HEIGHT2I) - coy;
 
-            let case_sx = (tri.square_x + WIDTH2I)/fac_x - coo.0*2;
-            let case_sy = (tri.square_y + HEIGHT2I)/fac_y - coo.1*2;
-            let case_end_x = (tri.square_width + WIDTH2I)/fac_x - coo.0*2;
-            let case_end_y = (tri.square_height+ HEIGHT2I)/fac_y - coo.1*2;
-
-            if case_sx < 1 && case_sy < 1 && case_end_x >= 0 && case_end_y >= 0 {
-                sup_screen[0][0].push(tri);
+            if case_sx < fac && case_sy < fac && case_end_x >= 0 && case_end_y >= 0 {
+                sup_screen[0].push(tri);
             }
-            if case_sx < 2 && case_sy < 1 && case_end_x >= 1 && case_end_y >= 0 {
-                sup_screen[0][1].push(tri);
+            if case_sx < 2*fac && case_sy < fac && case_end_x >= fac && case_end_y >= 0 {
+                sup_screen[1].push(tri);
             }
-            if case_sx < 1 && case_sy < 2 && case_end_x >= 0 && case_end_y >= 1 {
-                sup_screen[1][0].push(tri);
+            if case_sx < fac && case_sy < 2*fac && case_end_x >= 0 && case_end_y >= fac {
+                sup_screen[2].push(tri);
             }
-            if case_sx < 2 && case_sy < 2 && case_end_x >= 1 && case_end_y >= 1 {
-                sup_screen[1][1].push(tri);
+            if case_sx < 2*fac && case_sy < 2*fac && case_end_x >= fac && case_end_y >= fac {
+                sup_screen[3].push(tri);
             }
         }
-        all_ptr.append(&mut split_screen(&sup_screen[0][0],(coo.0*2  ,coo.1*2)  ,grid_size,gpu_buffer,gpu));
-        all_ptr.append(&mut split_screen(&sup_screen[0][1],(coo.0*2+1,coo.1*2)  ,grid_size,gpu_buffer,gpu));
-        all_ptr.append(&mut split_screen(&sup_screen[1][0],(coo.0*2  ,coo.1*2+1),grid_size,gpu_buffer,gpu));
-        all_ptr.append(&mut split_screen(&sup_screen[1][1],(coo.0*2+1,coo.1*2+1),grid_size,gpu_buffer,gpu));
-    }else{
-        //let fac = (all_triangles.len() / (MAX_TRIANGLES+1) );
-        // let mut index = 0;
-        // let mut all_tri : Vec<Vec<Triangle2D>> = vec![Vec::new(); fac+1];
-        // for tri in all_triangles.iter() {
-        //     all_tri[index/(MAX_TRIANGLES+1)].push((**tri).clone());
-        //     index += 1;
-        // }
-            let block_x = (((WIDTH as i64/grid_size) as u32)+ 16 - 1) / 16;
-            let block_y = (((HEIGHT as i64/grid_size) as u32)+ 16 - 1) / 16;
-            let threads : dim3 = dim3::new_2d(16,16);
-            let blocks  : dim3 = dim3::new_2d(block_x,block_y);
-         // for triangles in all_tri.iter() {
-         //     if triangles.len() > 0 {
-            let mut gpu_ptr: CUdeviceptr = ptr::null_mut();
-            if all_triangles.len() > 0{
-                let triangles = all_triangles.iter().map(|t| {(**t).clone()}).collect::<Vec<Triangle2D>>();
-                gpu_ptr = Gpu::malloc::<Triangle2D>(triangles.len());
-                Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, triangles.len());
-                all_ptr.push(gpu_ptr);
-            }
-            //let fac = all_triangles.len()/MAX_TRIANGLES;
-            let fac = 0;
-            for i in 0..(fac+1) {
-                let mut params = to_params!(
-                    unsafe {gpu_ptr.add(i*MAX_TRIANGLES*size_of::<Triangle2D>())},
-                    gpu_buffer,
-                    coo.0,
-                    coo.1,
-                    grid_size,
-                    (WIDTH as i64),
-                    (HEIGHT as i64),
-                    if all_triangles.len() >= (i+1)*MAX_TRIANGLES {MAX_TRIANGLES as i64} else {(all_triangles.len() % MAX_TRIANGLES) as i64}
-                );
-                gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr());
-            }
-        //}
-    }
-    all_ptr
 
+        all_ptr.append(&mut sup_screen
+            .into_par_iter()
+            .enumerate()
+            .flat_map(|(idx,array)| {
+                let coo = (coo.0 * 2 + (idx as i64) % 2, coo.1 * 2 + (idx as i64) / 2);
+                split_screen(array, coo, grid_size, gpu_buffer, gpu)
+            }).collect::<Vec<((i64,i64),i64,Vec<&Triangle2D>)>>());
+        all_ptr
+    }else {
+        vec![(coo, grid_size,all_triangles)]
+    }
 }
 
 fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_buffer : CUdeviceptr, gpu : &mut Gpu ) {
     let lights = camera.get_lights();
-    let result = triangles.par_iter().clone().flat_map(|tri_3d| { tri_3d.to_2d(&camera)}).collect::<Vec<Triangle2D>>();
+    let st = Instant::now();
+    let result = triangles.par_iter().flat_map(|tri_3d| { tri_3d.to_2d(&camera)}).collect::<Vec<Triangle2D>>();
+    let diff_cpu = time::Instant::now() - st.elapsed();
     let reference = result.iter().map(|tri| tri).collect::<Vec<&Triangle2D>>();
-    let all_ptr = split_screen(&reference,(0,0),1,gpu_buffer,gpu);
+    let st = Instant::now();
+    //let all_grid = split_screen(reference,(0,0),1,gpu_buffer as usize,gpu);
+    let mut all_ptr : Vec<CUdeviceptr> = vec![];
+    let threads : dim3 = dim3::new_2d(GRID_SIZE,GRID_SIZE);
+    for (coo,grid_size,tri) in split_screen(reference,(0,0),1,gpu_buffer as usize,gpu) {
+        let fac = WIDTH as i64 / grid_size;
+        let block_x = ((fac as u32)+ 16 - 1) / 16;
+        let mut block_y = block_x;
+        if fac*(coo.1+1) > HEIGHT as i64{
+            let diff = fac*(coo.1+1) - (HEIGHT as i64);
+            block_y = ((diff as u32)+ 16 - 1) / 16;
+        }
+        let blocks  : dim3 = dim3::new_2d(block_x,block_y);
+        let mut gpu_ptr: CUdeviceptr = ptr::null_mut();
+        let size = tri.len();
+        if tri.len() > 0{
+            let triangles = tri.iter().map(|tri| {(**tri).clone()}).collect::<Vec<Triangle2D>>();
+            gpu_ptr = Gpu::malloc::<Triangle2D>(size);
+            Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size);
+            all_ptr.push(gpu_ptr);
+        }
+        let mut params = to_params!(
+                gpu_ptr as CUdeviceptr,
+                gpu_buffer,
+                coo.0,
+                coo.1,
+                grid_size,
+                (WIDTH as i64),
+                (HEIGHT as i64),
+                size
+            );
+        gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr());
+    }
     gpu.synchronize();
     for ptr in all_ptr {
         Gpu::free(ptr);
     }
+    let diff_gpu = time::Instant::now() - st.elapsed();
+    println!("CPU {} GPU {}",diff_cpu.elapsed().as_nanos(), diff_gpu.elapsed().as_nanos());
 }
 
 fn main() {
@@ -676,7 +681,7 @@ fn main() {
         }
         fps_100[index] = d2;
         index = (index + 1) %FPS_BUFFER_SIZE;
-        println!("\r FPS : mean {} instant {} index {}",fps/FPS_BUFFER_SIZE_128,d2,index);
+        println!("\r FPS : mean {} instant {} index {} size {}",fps/FPS_BUFFER_SIZE_128,d2,index,triangles.len());
     }
     Gpu::free(buffer_gpu);
     //Gpu::free_host(buffer);

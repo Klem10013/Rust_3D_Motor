@@ -540,7 +540,7 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, atomic_buffer: &m
                                         let angle = dt/sz;
                                         if angle > 0f64{
                                             let light = 255f64*angle*10.0;
-                                            let fac = 10.0/dist;
+                                            let fac = 20.0/dist;
                                             let fac = fac * fac;
                                             let dim_r = (r_c as f64 * fac).clamp(0.0,1.0);
                                             let dim_g = (g_c as f64 * fac).clamp(0.0,1.0);

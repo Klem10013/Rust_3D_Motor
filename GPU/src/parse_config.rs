@@ -211,7 +211,7 @@ pub fn generate_config() -> (Camera,Vec<Triangle3D>){
     }
     triangles.append(&mut stl_parser(&config));
     triangles.append(&mut obj_parser(&config));
-    (Camera::new(350,config.sun, config.lights), triangles)
+    (Camera::new(500,config.sun, config.lights), triangles)
 }
 
 pub fn read_png_to_col(path : &String) -> Color{
