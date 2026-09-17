@@ -10,7 +10,7 @@ use image::RgbaImage;
 use minifb::Key::{H, W};
 use rayon::prelude::*;
 use GPU::Gpu;
-use crate::GPU::{dim3, CUdeviceptr};
+use crate::GPU::{dim3, CUdeviceptr, CUstream};
 use parse_config::generate_config;
 
 
@@ -539,7 +539,7 @@ const fn cross(a: (f32,f32,f32), b: (f32,f32,f32)) -> (f32,f32,f32) {
 const MAX_TRIANGLES : usize = 300;
 const GRID_SIZE: u32 = 32;
 
-fn split_screen<'a>(all_triangles: Vec<&'a Triangle2D>, coo : (i64, i64), grid_size : i64, gpu_buffer :  usize , gpu  : &Gpu) -> Vec<((i64,i64),i64,Vec<&'a Triangle2D>)>{
+fn split_screen(all_triangles: Vec<&Triangle2D>, coo : (i64, i64), grid_size : i64) -> Vec<((i64,i64),i64,Vec<&Triangle2D>)>{
     let mut all_ptr: Vec<((i64,i64),i64,Vec<&Triangle2D>)>  = vec![];
     if all_triangles.len() > MAX_TRIANGLES && grid_size < ((WIDTH as u32 /128) as i64){
         let mut sup_screen : Vec<Vec<&Triangle2D>> = vec![vec![]; 4];
@@ -572,7 +572,7 @@ fn split_screen<'a>(all_triangles: Vec<&'a Triangle2D>, coo : (i64, i64), grid_s
             .enumerate()
             .flat_map(|(idx,array)| {
                 let coo = (coo.0 * 2 + (idx as i64) % 2, coo.1 * 2 + (idx as i64) / 2);
-                split_screen(array, coo, grid_size, gpu_buffer, gpu)
+                split_screen(array, coo, grid_size)
             }).collect::<Vec<((i64,i64),i64,Vec<&Triangle2D>)>>());
         all_ptr
     }else {
@@ -582,49 +582,68 @@ fn split_screen<'a>(all_triangles: Vec<&'a Triangle2D>, coo : (i64, i64), grid_s
 
 fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_buffer : CUdeviceptr, gpu : &mut Gpu ) {
     let lights = camera.get_lights();
+    //Start CPU
     let st = Instant::now();
+
     let result = triangles.par_iter().flat_map(|tri_3d| { tri_3d.to_2d(&camera)}).collect::<Vec<Triangle2D>>();
-    let diff_cpu = time::Instant::now() - st.elapsed();
     let reference = result.iter().map(|tri| tri).collect::<Vec<&Triangle2D>>();
-    let st = Instant::now();
-    //let all_grid = split_screen(reference,(0,0),1,gpu_buffer as usize,gpu);
-    let mut all_ptr : Vec<CUdeviceptr> = vec![];
+    let sp = split_screen(reference,(0,0),1) ;
+    //End CPU
+    let diff_cpu = st.elapsed().as_nanos();
+    let gpu_buffer = gpu_buffer as usize;
+    //Start GPU
+
     let threads : dim3 = dim3::new_2d(GRID_SIZE,GRID_SIZE);
-    for (coo,grid_size,tri) in split_screen(reference,(0,0),1,gpu_buffer as usize,gpu) {
-        let fac = WIDTH as i64 / grid_size;
-        let block_x = ((fac as u32)+ 16 - 1) / 16;
-        let mut block_y = block_x;
-        if fac*(coo.1+1) > HEIGHT as i64{
-            let diff = fac*(coo.1+1) - (HEIGHT as i64);
-            block_y = ((diff as u32)+ 16 - 1) / 16;
-        }
-        let blocks  : dim3 = dim3::new_2d(block_x,block_y);
+    let st = Instant::now();
+    let all_ptr : Vec<(usize,usize)> = sp.into_par_iter().map(|(coo,grid_size,tri)| {
+        gpu.set_ctx();
         let mut gpu_ptr: CUdeviceptr = ptr::null_mut();
+        let mut stream : CUdeviceptr = ptr::null_mut();
         let size = tri.len();
         if tri.len() > 0{
+            stream = Gpu::create_steam();
             let triangles = tri.iter().map(|tri| {(**tri).clone()}).collect::<Vec<Triangle2D>>();
-            gpu_ptr = Gpu::malloc::<Triangle2D>(size);
-            Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size);
-            all_ptr.push(gpu_ptr);
+            gpu_ptr = Gpu::malloc_async::<Triangle2D>(size,stream);
+            Gpu::mem_cpy_async::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size,stream);
+            //gpu_ptr = Gpu::malloc::<Triangle2D>(size);
+            //Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size);
         }
-        let mut params = to_params!(
-                gpu_ptr as CUdeviceptr,
-                gpu_buffer,
-                coo.0,
-                coo.1,
-                grid_size,
-                (WIDTH as i64),
-                (HEIGHT as i64),
-                size
-            );
-        gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr());
-    }
+         let fac = WIDTH as i64 / grid_size ;
+         let block_x = ((fac as u32)+ 16 - 1) / 16;
+         let mut block_y = block_x;
+         if fac*(coo.1+1) > HEIGHT as i64{
+             let diff = fac*(coo.1+1) - (HEIGHT as i64);
+             block_y = ((diff as u32)+ 16 - 1) / 16;
+         }
+         let blocks  : dim3 = dim3::new_2d(block_x,block_y);
+         let mut params = to_params!(
+                 gpu_ptr as CUdeviceptr,
+                 gpu_buffer as CUdeviceptr,
+                 coo.0,
+                 coo.1,
+                 grid_size,
+                 (WIDTH as i64),
+                 (HEIGHT as i64),
+                 size
+             );
+         gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr(),stream);
+        Gpu::synchronize_stream(stream);
+        (gpu_ptr as usize, stream as usize)
+    }).collect::<Vec<(usize,usize)>>();
+
     gpu.synchronize();
-    for ptr in all_ptr {
-        Gpu::free(ptr);
+    //End GPU
+    let diff_gpu = st.elapsed().as_nanos();
+    for (ptr,stream) in all_ptr {
+        if stream != 0 {
+            Gpu::free_async(ptr as CUdeviceptr, stream as CUstream);
+            Gpu::destroy_stream(stream as CUstream);
+        }
+        else {
+            Gpu::free(ptr as CUdeviceptr);
+        }
     }
-    let diff_gpu = time::Instant::now() - st.elapsed();
-    println!("CPU {} GPU {}",diff_cpu.elapsed().as_nanos(), diff_gpu.elapsed().as_nanos());
+    println!("CPU {} GPU {}",diff_cpu,diff_gpu);
 }
 
 fn main() {

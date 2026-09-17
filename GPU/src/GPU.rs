@@ -34,6 +34,7 @@ unsafe extern "C" {
 
     fn cuCtxCreate_v2(pctx : &mut CUcontext, flags: u32, dev : CUdevice) -> CUresult;
     fn cuCtxDestroy_v2(pctx : CUcontext) -> CUresult;
+    fn cuCtxSetCurrent(ctx : CUcontext) -> CUresult;
 
     fn cuModuleLoad(module : *mut CUmodule, fname : *const c_char) -> CUresult;
     fn cuModuleLoadData(module : *mut CUmodule, image : *const c_void) -> CUresult;
@@ -41,15 +42,23 @@ unsafe extern "C" {
 
     fn cuGetErrorString(error : CUresult, p_str : *mut *const c_char ) -> *const c_char;
 
+    fn cuStreamCreate(ph_stream: *mut CUstream, flags : u32) -> CUresult;
+    fn cuStreamDestroy_v2(h_stream : CUstream) -> CUresult;
+
     fn cuMemAllocHost_v2(host_p : *mut *mut c_void, bytesize : usize) -> CUresult;
     fn cuMemAlloc_v2(device_ptr : *mut CUdeviceptr, bytesize : usize) -> CUresult;
+    fn cuMemAllocAsync(device_ptr : *mut CUdeviceptr, bytesize : usize, h_stream : CUstream) -> CUresult;
 
     fn cuMemFreeHost(p : *mut c_void) -> CUresult;
     fn cuMemFree_v2(p : CUdeviceptr) -> CUresult;
+    fn cuMemFreeAsync(p : CUdeviceptr, h_stream : CUstream) -> CUresult;
+
     fn cuMemcpy(dst_p : CUdeviceptr, src : CUdeviceptr, bytesize : usize) -> CUresult;
+    fn cuMemcpyHtoDAsync_v2(dst_p : CUdeviceptr, src: CUdeviceptr, bytesize : usize, h_stream : CUstream) -> CUresult;
 
     fn cuLaunchKernel(f : CUfunction, grid_dim_x : u32, grid_dim_y : u32, grid_dim_z : u32, block_dim_x : u32, block_dim_y : u32, block_dim_z : u32, shared_mem_bytes : u32, h_stream : CUstream, kernel_params : *mut *mut c_void, extra : *mut *mut c_void) -> CUresult;
     fn cuCtxSynchronize() -> CUresult;
+    fn cuStreamSynchronize(stream : CUstream) -> CUresult;
 }
 
 fn check(res: CUresult, what: &str) {
@@ -71,6 +80,7 @@ fn check(res: CUresult, what: &str) {
 }
 
 #[allow(non_camel_case_types)]
+#[derive(Debug)]
 pub struct dim3{
     x : u32,
     y : u32,
@@ -113,6 +123,7 @@ impl Gpu{
 
             //flag 0x04 = CU_CTX_SCHED_BLOCKING_SYNC (Set blocking synchronization as default scheduling)
             let ctx_flags: u32 = 0x04;
+            //let ctx_flags: u32 = 0x0;
         unsafe {
             //Init Cuda
             check(cuInit(0), "cudaInit");
@@ -161,15 +172,35 @@ impl Gpu{
         ptr
     }
 
+    pub fn malloc_async<T>(size : usize, stream : CUstream) -> CUdeviceptr{
+        let mut ptr : CUdeviceptr = ptr::null_mut();
+        unsafe {
+            check(cuMemAllocAsync((&mut ptr) as *mut *mut c_void, size*size_of::<T>(), stream),"cuMemAllocAsync");
+        }
+        ptr
+    }
+
     pub fn mem_copy<T>(ptr_dest : CUdeviceptr, ptr_src : CUdeviceptr, size : usize){
         unsafe {
             check(cuMemcpy(ptr_dest,ptr_src ,size*size_of::<T>()),"cuMemcpy");
         }
     }
 
+    pub fn mem_cpy_async<T>(ptr_dest : CUdeviceptr, ptr_src: CUdeviceptr, size : usize, stream : CUstream){
+        unsafe {
+            check(cuMemcpyHtoDAsync_v2(ptr_dest,ptr_src,size*size_of::<T>(),stream),"cuMemcpyHtoDAsync");
+        }
+    }
+
     pub fn free(ptr: CUdeviceptr){
         unsafe {
             check(cuMemFree_v2(ptr),"cuMemFree");
+        }
+    }
+
+    pub fn free_async(ptr: CUdeviceptr, stream : CUstream){
+        unsafe {
+            check(cuMemFreeAsync(ptr,stream),"cuMemFreeAsync");
         }
     }
 
@@ -185,15 +216,42 @@ impl Gpu{
         }
     }
 
+    pub fn set_ctx(&self){
+        unsafe {
+            check(cuCtxSetCurrent(self.pctx), "cuCtxSetCurrent");
+        }
+    }
+
     pub fn synchronize(&self){
         unsafe {
             check(cuCtxSynchronize(), "cuCtxSynchronize");
         }
     }
 
-    pub fn launch_kernel(&self, blocks : &dim3, thread : &dim3 , kernel_params : *mut *mut c_void){
+    pub fn synchronize_stream(stream : CUstream){
         unsafe {
-            check(cuLaunchKernel(self.function,blocks.x,blocks.y,blocks.z, thread.x,thread.y,thread.z, 0, ptr::null_mut(),kernel_params,ptr::null_mut()),"cuLaunchKernel");
+            check(cuStreamSynchronize(stream), "cuStreamSynchronize");
+        }
+    }
+
+    pub fn launch_kernel(&self, blocks : &dim3, thread : &dim3 , kernel_params : *mut *mut c_void,stream : CUstream){
+        unsafe {
+            check(cuLaunchKernel(self.function,blocks.x,blocks.y,blocks.z, thread.x,thread.y,thread.z, 0, stream,kernel_params,ptr::null_mut()),"cuLaunchKernel");
+        }
+    }
+
+    pub fn create_steam() -> CUstream{
+        let mut st : CUstream = ptr::null_mut();
+        unsafe {
+            //flags = CU_STREAM_NON_BLOCKING = 0x01
+            check(cuStreamCreate(&mut st,0x01),"cuStreamCreate");
+        }
+        st
+    }
+
+    pub fn destroy_stream(stream : CUstream){
+        unsafe {
+            check(cuStreamDestroy_v2(stream), "cuStreamDestroy");
         }
     }
 

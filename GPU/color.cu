@@ -84,7 +84,7 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
     int x_i = x_t + x_c * fac_x;
     int y_i = y_t + y_c * fac_x;
     if (x_i < (x_c + 1)*fac_x && y_i < (y_c + 1)*fac_x){
-        int index = x_i + y_i*width;
+        int index = x_i + (y_i)*width;
         if (index < width*height){
             Color[index] = ((grid_size*9876567239 + x_c*98760987 +y_c*98765678)%(0xFFFFFF));
             //Color[index] = 0;
