@@ -3,12 +3,11 @@
 #include <iostream>
 #include <cstdint>
 
+
 struct Point2D { float x, y;};
 struct Point3D { float x, y, z;};
 
-__device__ float vec_size(const Point3D& p){
-    return cuda::std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
-}
+__device__ float vec_size(const Point3D& p);
 
 class Normal{
 public:
@@ -25,16 +24,22 @@ public:
     }
 };
 
-class Triangles2D{
-public :
-    Point2D p1i, p2i, p3i;  // position
-    Point3D p1_3d, p2_3d, p3_3d;// position
+struct Triangles2D{
+    Point2D p1i, p2i, p3i;
+    Point3D p1_3d, p2_3d, p3_3d;
     float area;
     int64_t square_x, square_y, square_width , square_height;
     bool only_face;
     Normal normal;
 
 };
+
+
+
+
+__device__ float vec_size(const Point3D& p){
+    return cuda::std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+}
 
 __device__ float sign(const Point2D& p1, const Point2D& p2, const Point2D& p3){
     return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
@@ -80,7 +85,6 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
     int y_t = threadIdx.y + blockDim.y * blockIdx.y;
 
     int fac_x = width/grid_size;
-    int fac_y = height/grid_size;
     int x_i = x_t + x_c * fac_x;
     int y_i = y_t + y_c * fac_x;
     if (x_i < (x_c + 1)*fac_x && y_i < (y_c + 1)*fac_x){
@@ -123,7 +127,7 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
                 float r_c = 255.0;
                 float g_c = 255.0;
                 float b_c = 255.0;
-                Point3D vec = Point3D{ -p.x , -p.y, -p.z};
+                Point3D vec = Point3D{ -p.x , -p.y, -p.z };
                 float dt = -tri.normal.dot_product(vec);
                 if (dt != 0.0){
                     float dist = vec_size(vec);
@@ -131,7 +135,7 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
                     float angle = dt / sz;
                     if (angle > 0.0){
                         float light = 255.0 * angle * 10.0;
-                        float fac = 20.0/dist;
+                        float fac = 50.0/dist;
                         fac = fac*fac;
                         float dim_r = clamp(r_c * fac,0.0,1.0);
                         float dim_g = clamp(g_c * fac,0.0,1.0);
@@ -147,3 +151,4 @@ extern "C" __global__ void color(const Triangles2D* __restrict__ triangles,unsig
         }
     }
 }
+

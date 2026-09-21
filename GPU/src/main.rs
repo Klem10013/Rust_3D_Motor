@@ -2,15 +2,16 @@ mod GPU;
 mod parse_config;
 
 use std::ffi::c_void;
-use std::{ptr, time};
+use std::ops::Deref;
+use std::ptr;
+use std::ptr::null_mut;
 use minifb::{Key, MouseMode, Window, WindowOptions};
 
 use std::time::Instant;
 use image::RgbaImage;
-use minifb::Key::{H, W};
 use rayon::prelude::*;
 use GPU::Gpu;
-use crate::GPU::{dim3, CUdeviceptr, CUstream};
+use crate::GPU::{dim3, CUdeviceptr};
 use parse_config::generate_config;
 
 
@@ -30,7 +31,7 @@ fn simple_rng(min : usize,max : usize) -> i64{
 }
 
 
-const FPS_BUFFER_SIZE: usize = 500;
+const FPS_BUFFER_SIZE: usize = 100;
 const FPS_BUFFER_SIZE_128: u128 = FPS_BUFFER_SIZE as u128;
 const FPS : usize = 60;
 
@@ -99,7 +100,7 @@ struct Camera{
     pos : (i64,i64,i64),
     posf : (f32,f32,f32),
     rot : (f32,f32,f32),
-    rot_cos_sin_1_2 : ((f32,f32),(f32,f32),(f32,f32)),
+    rot_cos_sin: ((f32, f32), (f32, f32), (f32, f32)),
     normal: Normal,
     sun : (f32,f32,f32),
     lights : Vec<(f32,f32,f32)>,
@@ -115,7 +116,7 @@ impl Camera{
             pos : (0, 0, 0),
             posf: (0.0, 0.0, 0.0),
             rot : (0f32, 0f32, 0f32),
-            rot_cos_sin_1_2: ((0.0, 0.0),(0.0, 0.0), (0.0, 0.0)),
+            rot_cos_sin: ((0.0, 1.0), (1.0, 0.0), (0.0, -1.0)),
             normal: Normal::new_from_equation((0, 0, 1), (0, 0, focal_point_distance)),
             sun,
             lights,
@@ -137,10 +138,10 @@ impl Camera{
     #[inline(always)]
     fn point_transformation(&self ,point : (f32,f32,f32)) -> (f32,f32,f32) {
         let point_c = (point.0 - self.posf.0, point.1 - self.posf.1, point.2 - self.posf.2);
-        let nx     = point_c.0 * self.rot_cos_sin_1_2.1.0 - point_c.2 * self.rot_cos_sin_1_2.1.1;
-        let nz_tmp = point_c.0 * self.rot_cos_sin_1_2.1.1 + point_c.2 * self.rot_cos_sin_1_2.1.0;
-        let nz     = point_c.1 * self.rot_cos_sin_1_2.2.1 + nz_tmp * self.rot_cos_sin_1_2.2.0;
-        let ny     = point_c.1 * self.rot_cos_sin_1_2.2.0 - nz_tmp * self.rot_cos_sin_1_2.2.1;
+        let nx     = point_c.0 * self.rot_cos_sin.1.0 - point_c.2 * self.rot_cos_sin.1.1;
+        let nz_tmp = point_c.0 * self.rot_cos_sin.1.1 + point_c.2 * self.rot_cos_sin.1.0;
+        let nz     = point_c.1 * self.rot_cos_sin.2.1 + nz_tmp * self.rot_cos_sin.2.0;
+        let ny     = point_c.1 * self.rot_cos_sin.2.0 - nz_tmp * self.rot_cos_sin.2.1;
         (nx, ny, nz)
     }
     pub fn get_lights(&self) -> Vec<(f32,f32,f32)>{
@@ -161,9 +162,9 @@ impl Camera{
                 let diff_y = (pos.1 - self.old_mouse_pos.1) / 5000f32;
                 self.rot.1 += diff_x.to_degrees();
                 self.rot.2 += diff_y.to_degrees();
-                self.rot_cos_sin_1_2 = ((self.rot.0.cos(),self.rot.0.sin()),
-                                        (self.rot.1.cos(),self.rot.1.sin()),
-                                        (self.rot.2.cos(),self.rot.2.sin()));
+                self.rot_cos_sin = ((self.rot.0.cos(), self.rot.0.sin()),
+                                    (self.rot.1.cos(),self.rot.1.sin()),
+                                    (self.rot.2.cos(),self.rot.2.sin()));
                 self.old_mouse_pos = (pos.0, pos.1);
             }
         } else {
@@ -450,11 +451,6 @@ impl Triangle2D{
 }
 
 #[inline(always)]
-const fn sign(p1 : (i64,i64), p2 : (f32,f32), p3 : (f32,f32)) -> f32{
-    (p1.0 as f32 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 as f32 - p3.1)
-}
-
-#[inline(always)]
 const fn min3(v1 : i64, v2 : i64, v3 : i64) -> i64{
     if v1 < v2{
         if v1 < v3 {v1} else {v3}
@@ -482,43 +478,11 @@ const fn intersection_t(normal : &Normal, droite: (f32,f32,f32), point : (f32,f3
     -(normal.dot_product_f32(point)  + normal.constantf)/ normal.dot_product_f32(droite)
 }
 #[inline(always)]
-const fn intersection_z(value : i64, prod : i64, normal_const : i64) -> i64{
-    value - (value * (prod + normal_const))/prod
-}
-
-#[inline(always)]
 const fn intersection_xy(normal : &Normal, droite : (f32,f32,f32), point : (f32,f32,f32)) -> (f32,f32){
     let t = intersection_t(normal, droite, point);
     let x = point.0 + droite.0*t;
     let y = point.1 + droite.1*t;
     (x, y)
-}
-
-#[inline(always)]
-const fn intersection_xyz(normal : &Normal, droite : (f32,f32,f32), point : (f32,f32,f32)) -> (f32,f32,f32){
-    let t = intersection_t(normal, droite, point);
-    let x = point.0 + droite.0*t;
-    let y = point.1 + droite.1*t;
-    let z = point.2 + droite.2*t;
-    (x, y, z)
-}
-
-#[inline(always)]
-const fn encode_i64(z : i64, color : u32) -> i64{
-    (color as i64) | z << 32
-}
-
-#[allow(dead_code)]
-#[inline(always)]
-const fn decode(code : i64) -> (i64,u32) {
-    let z = code >> 32;
-    let color : u32 = code as u32;
-    (z ,color)
-}
-
-#[inline(always)]
-const fn same_signe(x : i64, y : i64) -> bool{
-    ((x as usize ^ (y as usize)) & 0x8000000000000000) == 0
 }
 
 #[inline(always)]
@@ -536,88 +500,115 @@ const fn cross(a: (f32,f32,f32), b: (f32,f32,f32)) -> (f32,f32,f32) {
     (a.1*b.2 - a.2*b.1, a.2*b.0 - a.0*b.2, a.0*b.1 - a.1*b.0)
 }
 
-const MAX_TRIANGLES : usize = 300;
+const MAX_TRIANGLES : usize = 1000;
 const GRID_SIZE: u32 = 32;
 
-fn split_screen(all_triangles: Vec<&Triangle2D>, coo : (i64, i64), grid_size : i64) -> Vec<((i64,i64),i64,Vec<&Triangle2D>)>{
-    let mut all_ptr: Vec<((i64,i64),i64,Vec<&Triangle2D>)>  = vec![];
-    if all_triangles.len() > MAX_TRIANGLES && grid_size < ((WIDTH as u32 /128) as i64){
-        let mut sup_screen : Vec<Vec<&Triangle2D>> = vec![vec![]; 4];
+fn split_screen(all_triangles: Vec<&Triangle2D>, coo : (i64, i64), grid_size : i64) -> (Vec<((i64,i64),i64,usize)>,Vec<&Triangle2D>){
+    if all_triangles.len() > MAX_TRIANGLES && grid_size < ((WIDTH as u32 /32) as i64){
+        let mut values   : Vec<((i64,i64),i64,usize)>  = vec![];
+        let mut triangles: Vec<&Triangle2D> = vec![];
+        let mut sup_screen : [Vec<&Triangle2D>;4] = [vec![],vec![],vec![],vec![]];
         let grid_size = grid_size << 1;
         let fac = WIDTH as i64 / grid_size;
         let cox = coo.0 * fac << 1;
         let coy = coo.1 * fac << 1;
-        for tri in all_triangles.iter() {
+        for tri in all_triangles.into_iter() {
             let case_sx = (tri.square_x + WIDTH2I) - cox;
             let case_sy = (tri.square_y + HEIGHT2I) - coy;
             let case_end_x = (tri.square_width + WIDTH2I) - cox;
             let case_end_y = (tri.square_height+ HEIGHT2I) - coy;
 
-            if case_sx < fac && case_sy < fac && case_end_x >= 0 && case_end_y >= 0 {
-                sup_screen[0].push(tri);
-            }
-            if case_sx < 2*fac && case_sy < fac && case_end_x >= fac && case_end_y >= 0 {
-                sup_screen[1].push(tri);
-            }
-            if case_sx < fac && case_sy < 2*fac && case_end_x >= 0 && case_end_y >= fac {
-                sup_screen[2].push(tri);
-            }
-            if case_sx < 2*fac && case_sy < 2*fac && case_end_x >= fac && case_end_y >= fac {
-                sup_screen[3].push(tri);
+            unsafe {
+                if case_sx < fac && case_sy < fac && case_end_x >= 0 && case_end_y >= 0 {
+                    sup_screen[0].push(&tri);
+                }
+                if case_sx < 2 * fac && case_sy < fac && case_end_x >= fac && case_end_y >= 0 {
+                    sup_screen[1].push(&tri);
+                }
+                if case_sx < fac && case_sy < 2 * fac && case_end_x >= 0 && case_end_y >= fac {
+                    sup_screen[2].push(&tri);
+                }
+                if case_sx < 2 * fac && case_sy < 2 * fac && case_end_x >= fac && case_end_y >= fac {
+                    sup_screen[3].push(&tri);
+                }
             }
         }
 
-        all_ptr.append(&mut sup_screen
-            .into_par_iter()
-            .enumerate()
-            .flat_map(|(idx,array)| {
-                let coo = (coo.0 * 2 + (idx as i64) % 2, coo.1 * 2 + (idx as i64) / 2);
-                split_screen(array, coo, grid_size)
-            }).collect::<Vec<((i64,i64),i64,Vec<&Triangle2D>)>>());
-        all_ptr
+        let mut iter = sup_screen.into_iter();
+        let mut v : Vec<((i64,i64),i64,usize)>;
+        let mut t : Vec<&Triangle2D>;
+        (v,t) = split_screen(iter.next().unwrap(), (coo.0 * 2    , coo.1 * 2), grid_size);
+        values.append(&mut v);
+        triangles.append(&mut t);
+        (v,t) = split_screen(iter.next().unwrap(), (coo.0 * 2 + 1, coo.1 * 2), grid_size);
+        values.append(&mut v);
+        triangles.append(&mut t);
+        (v,t) = split_screen(iter.next().unwrap(), (coo.0 * 2    , coo.1 * 2 + 1), grid_size);
+        values.append(&mut v);
+        triangles.append(&mut t);
+        (v,t) = split_screen(iter.next().unwrap(), (coo.0 * 2 + 1, coo.1 * 2 + 1), grid_size);
+        values.append(&mut v);
+        triangles.append(&mut t);
+
+        (values,triangles)
     }else {
-        vec![(coo, grid_size,all_triangles)]
+        (vec![(coo, grid_size,all_triangles.len())],all_triangles)
     }
 }
 
-fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_buffer : CUdeviceptr, gpu : &mut Gpu ) {
+const CORE_NUMBER: usize = 20;
+fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_color_buffer: CUdeviceptr, gpu : &mut Gpu, mut triangles_buffer_len : usize, mut gpu_triangles_buffer : CUdeviceptr ) -> (usize, CUdeviceptr) {
     let lights = camera.get_lights();
     //Start CPU
     let st = Instant::now();
 
-    let result = triangles.par_iter().flat_map(|tri_3d| { tri_3d.to_2d(&camera)}).collect::<Vec<Triangle2D>>();
-    let reference = result.iter().map(|tri| tri).collect::<Vec<&Triangle2D>>();
-    let sp = split_screen(reference,(0,0),1) ;
-    //End CPU
-    let diff_cpu = st.elapsed().as_nanos();
-    let gpu_buffer = gpu_buffer as usize;
-    //Start GPU
+    //let mut tri : [Vec<&Triangle3D>; CORE_NUMBER] = [vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![],vec![]];
 
-    let threads : dim3 = dim3::new_2d(GRID_SIZE,GRID_SIZE);
+    let result = triangles.par_chunks(triangles.len()/CORE_NUMBER).flat_map(|vec_tri_3d| { vec_tri_3d.iter().flat_map(| tri_3d | tri_3d.to_2d(&camera)).collect::<Vec<Triangle2D>>() }).collect::<Vec<Triangle2D>>();
+    let sp = split_screen(result.iter().collect::<Vec<&Triangle2D>>(),(0,0),1) ;
+
+    let mut next = 0;
+    let all_line_up : Vec<Triangle2D> = sp.1.into_iter().map(|tri| tri.clone()).collect::<Vec<Triangle2D>>();
+    let all_ptr : Vec<((i64,i64),i64,usize,usize)> = sp.0.into_iter().map(|(coo,grid,tri)| {
+        let res = (coo,grid,next,tri);
+        next += tri*size_of::<Triangle2D>();
+        res
+    }).collect::<Vec<((i64,i64),i64,usize,usize)>>();
+    let diff_cpu = st.elapsed().as_nanos();
+
+    //End CPU
+
+    //Start GPU
     let st = Instant::now();
-    let all_ptr : Vec<(usize,usize)> = sp.into_par_iter().map(|(coo,grid_size,tri)| {
-        gpu.set_ctx();
-        let mut gpu_ptr: CUdeviceptr = ptr::null_mut();
-        let mut stream : CUdeviceptr = ptr::null_mut();
-        let size = tri.len();
-        if tri.len() > 0{
-            stream = Gpu::create_steam();
-            let triangles = tri.iter().map(|tri| {(**tri).clone()}).collect::<Vec<Triangle2D>>();
-            gpu_ptr = Gpu::malloc_async::<Triangle2D>(size,stream);
-            Gpu::mem_cpy_async::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size,stream);
-            //gpu_ptr = Gpu::malloc::<Triangle2D>(size);
-            //Gpu::mem_copy::<Triangle2D>(gpu_ptr, triangles.as_ptr() as CUdeviceptr, size);
-        }
-         let fac = WIDTH as i64 / grid_size ;
-         let block_x = ((fac as u32)+ 16 - 1) / 16;
-         let mut block_y = block_x;
-         if fac*(coo.1+1) > HEIGHT as i64{
+
+    let stream = Gpu::create_steam();
+    if all_line_up.len() > triangles_buffer_len{
+        Gpu::free(gpu_triangles_buffer);
+        gpu_triangles_buffer = Gpu::malloc_async::<Triangle2D>(all_line_up.len(),stream);
+        triangles_buffer_len = all_line_up.len();
+    }
+    if all_line_up.len() != 0 {
+        Gpu::mem_copy_async::<Triangle2D>(gpu_triangles_buffer, all_line_up.as_ptr() as CUdeviceptr, all_line_up.len(), stream);
+        Gpu::synchronize_stream(stream);
+    }
+    let gpu_ptr_safe = gpu_triangles_buffer as usize;
+    let gpu_buffer   = gpu_color_buffer as usize;
+    let threads : dim3 = dim3::new_2d(GRID_SIZE,GRID_SIZE);
+
+    let mut sum = 0;
+
+    let all_stream : Vec<u64> = all_ptr.into_iter().map(|(coo,grid_size, offset,size)| {
+        let stream = Gpu::create_steam();
+        let fac = WIDTH as i64 / grid_size ;
+        let block_x = ((fac as u32)+ GRID_SIZE - 1) / GRID_SIZE;
+        let mut block_y = block_x;
+        if fac*(coo.1+1) > HEIGHT as i64{
              let diff = fac*(coo.1+1) - (HEIGHT as i64);
-             block_y = ((diff as u32)+ 16 - 1) / 16;
-         }
-         let blocks  : dim3 = dim3::new_2d(block_x,block_y);
-         let mut params = to_params!(
-                 gpu_ptr as CUdeviceptr,
+             block_y = ((diff as u32)+ GRID_SIZE - 1) / GRID_SIZE;
+        }
+        let blocks  : dim3 = dim3::new_2d(block_x,block_y);
+        let mut params = to_params!(
+                 (gpu_ptr_safe + offset) as CUdeviceptr,
                  gpu_buffer as CUdeviceptr,
                  coo.0,
                  coo.1,
@@ -626,24 +617,24 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_buffer : CUde
                  (HEIGHT as i64),
                  size
              );
-         gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr(),stream);
-        Gpu::synchronize_stream(stream);
-        (gpu_ptr as usize, stream as usize)
-    }).collect::<Vec<(usize,usize)>>();
+        gpu.launch_kernel(&blocks, &threads,params.as_mut_ptr(),stream);
+        stream as u64
+    }).collect::<Vec<u64>>();
 
-    gpu.synchronize();
+    let l = all_stream.len();
+    for stream in all_stream {
+        let st = Instant::now();
+        Gpu::synchronize_stream(stream as CUdeviceptr);
+        Gpu::destroy_stream(stream as CUdeviceptr);
+    }
+    Gpu::destroy_stream(stream);
+
     //End GPU
     let diff_gpu = st.elapsed().as_nanos();
-    for (ptr,stream) in all_ptr {
-        if stream != 0 {
-            Gpu::free_async(ptr as CUdeviceptr, stream as CUstream);
-            Gpu::destroy_stream(stream as CUstream);
-        }
-        else {
-            Gpu::free(ptr as CUdeviceptr);
-        }
-    }
-    println!("CPU {} GPU {}",diff_cpu,diff_gpu);
+
+    println!("CPU {} GPU {}, ker_call {}",diff_cpu,diff_gpu, (sum as usize)/l);
+
+    (triangles_buffer_len,gpu_triangles_buffer)
 }
 
 fn main() {
@@ -660,11 +651,8 @@ fn main() {
     let mut buffer: Vec<u32> = vec!(0;WIDTH*HEIGHT);
     //let triangles_gpu = Gpu::malloc::<Triangle2D>(triangles.len());
     let buffer_gpu = Gpu::malloc::<u32>(WIDTH*HEIGHT);
+    let stream_gpu = Gpu::create_steam();
 
-    //let width_b  = (WIDTH + 255 - 1) / 255;
-    //let height_b = (HEIGHT + 255 - 1) / 255;
-    //let threads : dim3 = dim3::new_2d(255,255);
-    //let blocks  : dim3 = dim3::new_2d(width_b as u32,height_b as u32);
 
 
     println!("Triangle Len {}",triangles.len());
@@ -679,18 +667,14 @@ fn main() {
     let mut index = 0;
     let mut fps_100 = vec![0; FPS_BUFFER_SIZE];
 
-    let mut speed : isize;
-    let mut old_mouse_pos = (0f32,0f32);
-
-
-
+    let mut len = 0;
+    let mut ptr = null_mut();
     while window.is_open() && !window.is_key_down(Key::Escape) {
         camera.move_cam(&window);
         let start = Instant::now();
-        compute_triangle(&triangles,&camera,buffer_gpu, &mut gpu);
-
-        Gpu::mem_copy::<u32>(buffer.as_mut_ptr() as CUdeviceptr, buffer_gpu, WIDTH*HEIGHT);
-
+        Gpu::mem_copy_async::<u32>(buffer.as_mut_ptr() as CUdeviceptr, buffer_gpu, WIDTH*HEIGHT,stream_gpu);
+        (len,ptr) = compute_triangle(&triangles,&camera,buffer_gpu, &mut gpu,len,ptr);
+        Gpu::synchronize_stream(stream_gpu);
         window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
 
         let d = start.elapsed().as_nanos();
@@ -703,6 +687,7 @@ fn main() {
         println!("\r FPS : mean {} instant {} index {} size {}",fps/FPS_BUFFER_SIZE_128,d2,index,triangles.len());
     }
     Gpu::free(buffer_gpu);
+    Gpu::destroy_stream(stream_gpu);
     //Gpu::free_host(buffer);
     gpu.end();
 }

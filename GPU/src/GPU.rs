@@ -186,7 +186,7 @@ impl Gpu{
         }
     }
 
-    pub fn mem_cpy_async<T>(ptr_dest : CUdeviceptr, ptr_src: CUdeviceptr, size : usize, stream : CUstream){
+    pub fn mem_copy_async<T>(ptr_dest : CUdeviceptr, ptr_src: CUdeviceptr, size : usize, stream : CUstream){
         unsafe {
             check(cuMemcpyHtoDAsync_v2(ptr_dest,ptr_src,size*size_of::<T>(),stream),"cuMemcpyHtoDAsync");
         }
