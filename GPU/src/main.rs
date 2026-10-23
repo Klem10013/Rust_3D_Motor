@@ -204,7 +204,6 @@ struct Normal{
     nxf : f32,
     nyf : f32,
     nzf : f32,
-    constant : i64,
     constantf : f32
 }
 
@@ -221,7 +220,6 @@ impl Normal{
             nyf : ny,
             nzf : nz,
             constantf: constant,
-            constant: constant as i64,
         }
     }
 
@@ -230,7 +228,6 @@ impl Normal{
             nxf: eq.0,
             nyf: eq.1,
             nzf: eq.2,
-            constant: -1 * (eq.0*pt.0 + eq.1*pt.1 + eq.2*pt.2) as i64,
             constantf: -1f32 * (eq.0*pt.0 + eq.1*pt.1 + eq.2*pt.2),
         }
     }
@@ -240,7 +237,6 @@ impl Normal{
             nxf: eq.0 as f32,
             nyf: eq.1 as f32,
             nzf: eq.2 as f32,
-            constant: -1 * (eq.0*pt.0 + eq.1*pt.1 + eq.2*pt.2),
             constantf: (-1 * (eq.0*pt.0 + eq.1*pt.1 + eq.2*pt.2)) as f32,
         }
     }
@@ -258,7 +254,6 @@ impl Normal{
         self.nxf *= -1.0;
         self.nyf *= -1.0;
         self.nzf *= -1.0;
-        self.constant *= -1;
         self.constantf *= -1f32;
     }
 
@@ -414,15 +409,18 @@ struct Triangle2D{
     p1i : Point2D, // position
     p2i : Point2D, // position
     p3i : Point2D, // position
-    p1_3d : Point3D, // position
-    p2_3d : Point3D, // position
-    p3_3d : Point3D, // position
-    area : f32,
     square_x : i64,
     square_y : i64,
     square_width : i64,
     square_height : i64,
-    only_face : bool,
+    normal: Normal,
+}
+
+#[repr(C)]
+struct Triangle2DLight{
+    p1i : Point2D, // position
+    p2i : Point2D, // position
+    p3i : Point2D, // position
     normal: Normal,
 }
 
@@ -436,17 +434,21 @@ impl Triangle2D{
             p1i : Point2D{x : p1i.0, y: p1i.1},
             p2i : Point2D{x : p2i.0, y: p2i.1},
             p3i : Point2D{x : p3i.0, y: p3i.1},
-            p1_3d : Point3D{ x : p1_3d.0, y : p1_3d.1 , z: p1_3d.2},
-            p2_3d : Point3D{ x : p2_3d.0, y : p2_3d.1 , z: p2_3d.2},
-            p3_3d : Point3D{ x : p3_3d.0, y : p3_3d.1 , z: p3_3d.2},
-            area,
             square_x: min3(p1.0, p2.0, p3.0),
             square_y: min3(p1.1, p2.1, p3.1),
             square_width: max3(p1.0, p2.0, p3.0),
             square_height: max3(p1.1, p2.1, p3.1),
-            only_face,
             normal,
         }
+    }
+
+    pub const fn to_light(self) -> Triangle2DLight{
+       Triangle2DLight{
+           p1i: self.p1i,
+           p2i: self.p2i,
+           p3i: self.p3i,
+           normal: self.normal
+       }
     }
 }
 
@@ -568,10 +570,10 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_color_buffer:
     let sp = split_screen(result.iter().collect::<Vec<&Triangle2D>>(),(0,0),1) ;
 
     let mut next = 0;
-    let all_line_up : Vec<Triangle2D> = sp.1.into_iter().map(|tri| tri.clone()).collect::<Vec<Triangle2D>>();
+    let all_line_up : Vec<Triangle2DLight> = sp.1.into_iter().map(|tri| tri.clone().to_light()).collect::<Vec<Triangle2DLight>>();
     let all_ptr : Vec<((i64,i64),i64,usize,usize)> = sp.0.into_iter().map(|(coo,grid,tri)| {
         let res = (coo,grid,next,tri);
-        next += tri*size_of::<Triangle2D>();
+        next += tri*size_of::<Triangle2DLight>();
         res
     }).collect::<Vec<((i64,i64),i64,usize,usize)>>();
     let diff_cpu = st.elapsed().as_nanos();
@@ -584,11 +586,11 @@ fn compute_triangle(triangles: &[Triangle3D], camera: &Camera, gpu_color_buffer:
     let stream = Gpu::create_steam();
     if all_line_up.len() > triangles_buffer_len{
         Gpu::free(gpu_triangles_buffer);
-        gpu_triangles_buffer = Gpu::malloc_async::<Triangle2D>(all_line_up.len(),stream);
+        gpu_triangles_buffer = Gpu::malloc_async::<Triangle2DLight>(all_line_up.len(),stream);
         triangles_buffer_len = all_line_up.len();
     }
     if all_line_up.len() != 0 {
-        Gpu::mem_copy_async::<Triangle2D>(gpu_triangles_buffer, all_line_up.as_ptr() as CUdeviceptr, all_line_up.len(), stream);
+        Gpu::mem_copy_async::<Triangle2DLight>(gpu_triangles_buffer, all_line_up.as_ptr() as CUdeviceptr, all_line_up.len(), stream);
         Gpu::synchronize_stream(stream);
     }
     let gpu_ptr_safe = gpu_triangles_buffer as usize;

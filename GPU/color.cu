@@ -12,7 +12,6 @@ __device__ float vec_size(const Point3D& p);
 class Normal{
 public:
     float nxf, nyf, nzf;
-    int64_t constant;
     float constantf;
 
     __device__ float dot_product(Point3D& p) const {
@@ -26,14 +25,41 @@ public:
 
 struct Triangles2D{
     Point2D p1i, p2i, p3i;
-    Point3D p1_3d, p2_3d, p3_3d;
-    float area;
-    int64_t square_x, square_y, square_width , square_height;
-    bool only_face;
     Normal normal;
 
 };
 
+struct Camera{
+    float focal_dist;
+    Point3D pos;
+    Point3D rot_cos;
+    Point3D rot_sin;
+};
+
+__device__ Point3D point_transformation(Point3D& point, Camera& camera){
+    Point3D point_c = Point3D{x : point.x - camera.pos.x, y : point.y - camera.pos.y, z: point.z - camera.pos.z};
+    float nx     = point_c.x * camera.rot_cos.y - point_c.z * camera.rot_sin.y;
+    float nz_tmp = point_c.x * camera.rot_sin.y + point_c.z * camera.rot_cos.y;
+    float nz     = point_c.y * camera.rot_sin.z + nz_tmp * camera.rot_cos.z;
+    float ny     = point_c.y * camera.rot_cos.z - nz_tmp * camera.rot_sin.z;
+    return Point3D{nx, ny, nz};
+}
+
+class Triangles3D{
+public:
+    Point3D p1,p2,p3;
+    Normal normal;
+    __device__ void to_2d(Camera camera, Triangles2D* buffer, int len){
+        Point3D p1_3d = point_transformation(p1,camera);
+        Point3D p2_3d = point_transformation(p2,camera);
+        Point3D p3_3d = point_transformation(p3,camera);
+
+        Triangles2D* all = NULL;
+        if (!(p1_3d.z < camera.focal_dist && p2_3d.z < camera.focal_dist && p3_3d.z < camera.focal_dist)){
+
+        }
+    }
+};
 
 
 
